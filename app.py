@@ -287,19 +287,16 @@ def main():
                 st.metric("Pedidos Incompletos", len(incompletos['Pedido'].unique()))
 
             # Sección de Análisis por Marca
+            # Mostrar contenido del archivo BD Brand
+            st.header("Base de Datos de Marcas")
+            bd_brand_df = procesador.archivo_bd_brand
+            st.dataframe(bd_brand_df, use_container_width=True)
+
             st.header("Análisis por Marca")
             
             # Mostrar métricas por marca
             st.subheader("Resumen por Marca")
             st.dataframe(reporte_marcas, use_container_width=True)
-            
-            # Descargar reporte de marcas
-            st.download_button(
-                "Descargar Reporte de Marcas",
-                data=to_excel(reporte_marcas),
-                file_name="reporte_marcas.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
 
             # Visualizaciones
             st.subheader("Visualizaciones por Marca")
