@@ -343,13 +343,24 @@ def main():
             st.header("Reporte Detallado por Marca")
             marcas = sorted(incompletos['Marca'].unique())
             
-            # Create Excel file with multiple sheets
+            # Crear tabs para cada marca
+            marca_tabs = st.tabs(marcas)
+            
+            # Dictionary para almacenar los DataFrames por marca
+            dfs_por_marca = {}
+            
+            for marca, tab in zip(marcas, marca_tabs):
+                with tab:
+                    df_marca = incompletos[incompletos['Marca'] == marca]
+                    dfs_por_marca[marca] = df_marca
+                    st.dataframe(df_marca, use_container_width=True)
+            
+            # Create Excel file with multiple sheets for download
             output = BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                for marca in marcas:
-                    df_marca = incompletos[incompletos['Marca'] == marca]
+                for marca, df in dfs_por_marca.items():
                     nombre_hoja = marca[:31]  # Excel limit for sheet names
-                    df_marca.to_excel(writer, sheet_name=nombre_hoja, index=False)
+                    df.to_excel(writer, sheet_name=nombre_hoja, index=False)
             
             st.download_button(
                 "Descargar Reporte Detallado por Marca",
