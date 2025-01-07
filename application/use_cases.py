@@ -11,11 +11,30 @@ import hashlib
 class ProcesarPedidosUseCase:
     MARCAS_PERMITIDAS = {"Marca privada Exp.", "Producto de Catálogo Americano"}
     CENTROS_REQUERIDOS = {"EXPO", "LARE"}
-    
+
+    # Mapeo de nombres de columnas
+    COLUMNAS_MAPPING = {
+        'Doc.ventas': 'Pedido',
+        'Descripción': 'Marca',
+        'Nombre 1': 'Cliente',
+        'Material': 'Material',
+        'Texto breve de material': 'Descripción',
+        ' Pendiente': 'Ctd. Sol.',
+        'Tránsito': 'Tránsito',
+        'Planta': 'CE',
+        'Embarque': 'Fecha Embarque',
+        'Liberación': 'Liberación en Sistema',
+        'Inventario': 'Inventario',
+        'Faltante': 'Faltante',
+        'Faltante con Tránsito': 'Faltante con Tránsito',
+        'Estatus': 'Estatus',
+        'Horario Entrega': 'Horario Entrega'
+    }
+
     def __init__(
-        self,
-        pedido_repository: Optional[PedidoRepository] = None,
-        cache_manager: Optional[CacheManager] = None
+            self,
+            pedido_repository: Optional[PedidoRepository] = None,
+            cache_manager: Optional[CacheManager] = None
     ):
         self.pedido_repository = pedido_repository
         self.cache_manager = cache_manager or InMemoryCacheManager()
@@ -28,7 +47,7 @@ class ProcesarPedidosUseCase:
             # Generar hash del contenido de los archivos
             pedidos_hash = hashlib.md5(archivo_pedidos.getvalue()).hexdigest()
             inventarios_hash = hashlib.md5(archivo_inventarios.getvalue()).hexdigest()
-            
+
             # Combinar los hashes para crear una clave única
             return f"pedidos_{pedidos_hash}_inventarios_{inventarios_hash}"
         except Exception as e:
@@ -44,10 +63,12 @@ class ProcesarPedidosUseCase:
                 archivo_pedidos,
                 header=9
             )
-            
+
+            # Eliminar primera fila y primera columna
             pedidos = pedidos.drop(index=0)
             pedidos = pedidos.iloc[:, 1:]
 
+            # Convertir fechas
             for columna in ['Embarque', 'Liberación']:
                 pedidos[columna] = pd.to_datetime(
                     pedidos[columna],
@@ -68,43 +89,10 @@ class ProcesarPedidosUseCase:
         except Exception as e:
             raise Exception(f"Error en preprocesamiento de inventarios: {str(e)}")
 
-    def _generar_reporte_marcas(self, pedidos: pd.DataFrame) -> pd.DataFrame:
-        """
-        Genera reporte detallado por marca
-        """
-        try:
-            reporte_marcas = pd.DataFrame()
-            
-            # Agrupar por marca
-            reporte_marcas['Total Pedidos'] = pedidos.groupby('Marca')['Pedido'].nunique()
-            
-            # Pedidos completos por marca
-            pedidos_completos = pedidos[pedidos['Estatus'] == 'Completo']
-            reporte_marcas['Pedidos Completos'] = pedidos_completos.groupby('Marca')['Pedido'].nunique()
-            
-            # Pedidos incompletos por marca
-            pedidos_incompletos = pedidos[pedidos['Estatus'] == 'Incompleto']
-            reporte_marcas['Pedidos Incompletos'] = pedidos_incompletos.groupby('Marca')['Pedido'].nunique()
-            
-            # Calcular porcentajes
-            reporte_marcas['% Completos'] = (reporte_marcas['Pedidos Completos'] / reporte_marcas['Total Pedidos'] * 100).round(2)
-            reporte_marcas['% Incompletos'] = (reporte_marcas['Pedidos Incompletos'] / reporte_marcas['Total Pedidos'] * 100).round(2)
-            
-            # Valor total de pedidos
-            reporte_marcas['Total Solicitado (pz)'] = pedidos.groupby('Marca')['Ctd. Sol.'].sum()
-            
-            # Valor faltante
-            reporte_marcas['Faltante (pz)'] = pedidos.groupby('Marca')['Faltante'].sum()
-            reporte_marcas['% Faltante'] = (reporte_marcas['Faltante (pz)'] / reporte_marcas['Total Solicitado (pz)'] * 100).round(2)
-            
-            return reporte_marcas
-        except Exception as e:
-            raise Exception(f"Error generando reporte de marcas: {str(e)}")
-
     def execute(
-        self,
-        archivo_pedidos: BytesIO,
-        archivo_inventarios: BytesIO
+            self,
+            archivo_pedidos: BytesIO,
+            archivo_inventarios: BytesIO
     ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         """
         Ejecuta el procesamiento principal de pedidos e inventarios
@@ -126,11 +114,11 @@ class ProcesarPedidosUseCase:
                 (pedidos['Muestra'] != 'X') &
                 (pedidos['Descripción'].isin(self.MARCAS_PERMITIDAS)) &
                 (~pedidos['Nombre 1'].str.contains('James Palin', na=False))
-            ]
+                ]
 
             # Procesar inventarios
             inventarios = inventarios[inventarios['Carac. Planif.'] != 'ND']
-            
+
             # Crear mapas para búsqueda O(1)
             mapa_inventario = defaultdict(float, inventarios.set_index('Material')['Disponible'].to_dict())
             mapa_transito = defaultdict(float, inventarios.set_index('Material')['Traslado'].to_dict())
@@ -138,17 +126,29 @@ class ProcesarPedidosUseCase:
             # Procesar pedidos de manera vectorizada
             pedidos['Inventario'] = pedidos['Material'].map(mapa_inventario)
             pedidos['Tránsito'] = pedidos['Material'].map(mapa_transito)
-            
-            # Calcular faltantes
-            pedidos['Faltante'] = np.maximum(0, pedidos['Pendiente'] - pedidos['Inventario'])
+
+            # Calcular faltantes - usando el nombre correcto de la columna
+            pedidos['Faltante'] = np.maximum(0, pedidos[' Pendiente'] - pedidos['Inventario'])
             pedidos['Faltante con Tránsito'] = np.maximum(0, pedidos['Faltante'] - pedidos['Tránsito'])
 
             # Determinar estado de pedidos
             pedidos['Estatus'] = np.where(pedidos['Faltante con Tránsito'] == 0, 'Completo', 'Incompleto')
 
+            # Ajustar horarios de entrega
+            pedidos['Horario Entrega'] = ''
+            pedidos.loc[
+                (pedidos['Faltante'] > 0) & (pedidos['Faltante con Tránsito'] == 0), 'Horario Entrega'] = 'Transito'
+            pedidos.loc[pedidos['TpMt'] == 'ZCOM', 'Horario Entrega'] = 'ZCOM'
+            pedidos.loc[pedidos['Planta'] == 'P5', 'Horario Entrega'] = 'P5/Expo'
+
             # Separar pedidos
-            completos = pedidos[pedidos['Estatus'] == 'Completo']
-            incompletos = pedidos[pedidos['Estatus'] == 'Incompleto']
+            completos = pedidos[pedidos['Estatus'] == 'Completo'].copy()
+            incompletos = pedidos[pedidos['Estatus'] == 'Incompleto'].copy()
+
+            # Renombrar columnas según el mapping
+            pedidos = pedidos.rename(columns=self.COLUMNAS_MAPPING)
+            completos = completos.rename(columns=self.COLUMNAS_MAPPING)
+            incompletos = incompletos.rename(columns=self.COLUMNAS_MAPPING)
 
             # Generar reporte de marcas
             reporte_marcas = self._generar_reporte_marcas(pedidos)
@@ -158,10 +158,46 @@ class ProcesarPedidosUseCase:
                 self.cache_manager.set(
                     cache_key,
                     (pedidos, completos, incompletos, reporte_marcas),
-                    ttl=3600  # 1 hora de caché
+                    ttl=3600
                 )
 
             return pedidos, completos, incompletos, reporte_marcas
 
         except Exception as e:
             raise Exception(f"Error en procesamiento: {str(e)}")
+
+    def _generar_reporte_marcas(self, pedidos: pd.DataFrame) -> pd.DataFrame:
+        """
+        Genera reporte detallado por marca
+        """
+        try:
+            reporte_marcas = pd.DataFrame()
+
+            # Agrupar por marca
+            reporte_marcas['Total Pedidos'] = pedidos.groupby('Marca')['Pedido'].nunique()
+
+            # Pedidos completos por marca
+            pedidos_completos = pedidos[pedidos['Estatus'] == 'Completo']
+            reporte_marcas['Pedidos Completos'] = pedidos_completos.groupby('Marca')['Pedido'].nunique()
+
+            # Pedidos incompletos por marca
+            pedidos_incompletos = pedidos[pedidos['Estatus'] == 'Incompleto']
+            reporte_marcas['Pedidos Incompletos'] = pedidos_incompletos.groupby('Marca')['Pedido'].nunique()
+
+            # Calcular porcentajes
+            reporte_marcas['% Completos'] = (
+                        reporte_marcas['Pedidos Completos'] / reporte_marcas['Total Pedidos'] * 100).round(2)
+            reporte_marcas['% Incompletos'] = (
+                        reporte_marcas['Pedidos Incompletos'] / reporte_marcas['Total Pedidos'] * 100).round(2)
+
+            # Valor total de pedidos
+            reporte_marcas['Total Solicitado (pz)'] = pedidos.groupby('Marca')['Ctd. Sol.'].sum()
+
+            # Valor faltante
+            reporte_marcas['Faltante (pz)'] = pedidos.groupby('Marca')['Faltante'].sum()
+            reporte_marcas['% Faltante'] = (
+                        reporte_marcas['Faltante (pz)'] / reporte_marcas['Total Solicitado (pz)'] * 100).round(2)
+
+            return reporte_marcas
+        except Exception as e:
+            raise Exception(f"Error generando reporte de marcas: {str(e)}")
