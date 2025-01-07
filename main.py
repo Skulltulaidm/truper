@@ -69,6 +69,9 @@ class ProcesadorPedidos:
         """
         Genera un reporte detallado por marca
         """
+        if pedidos.empty:
+            return pd.DataFrame()
+
         reporte_marcas = pd.DataFrame()
 
         # Agrupar por marca
@@ -231,13 +234,24 @@ def to_excel(df: pd.DataFrame) -> bytes:
 
 def crear_graficas_marca(reporte_marcas: pd.DataFrame):
     """
-    Crea visualizaciones para el reporte de marcas
+    Crea visualizaciones para el reporte de marcas de manera segura
     """
-    # Gráfica de barras apiladas para pedidos completos/incompletos
+    if reporte_marcas.empty:
+        return None, None
+
+    # Preparar datos para gráfica de barras apiladas
+    df_pedidos = reporte_marcas.reset_index()
+    df_pedidos = pd.melt(
+        df_pedidos,
+        id_vars=['Marca'],
+        value_vars=['Pedidos Completos', 'Pedidos Incompletos']
+    )
+
     fig_pedidos = px.bar(
-        reporte_marcas,
-        x=reporte_marcas.index,
-        y=['Pedidos Completos', 'Pedidos Incompletos'],
+        df_pedidos,
+        x='Marca',
+        y='value',
+        color='variable',
         title='Distribución de Pedidos por Marca',
         labels={'value': 'Número de Pedidos', 'variable': 'Tipo de Pedido'},
         barmode='stack'
@@ -245,16 +259,41 @@ def crear_graficas_marca(reporte_marcas: pd.DataFrame):
 
     # Gráfica de porcentaje de faltantes
     fig_faltantes = px.bar(
-        reporte_marcas,
-        x=reporte_marcas.index,
+        reporte_marcas.reset_index(),
+        x='Marca',
         y='% Faltante',
         title='Porcentaje de Faltantes por Marca',
-        labels={'% Faltante': 'Porcentaje Faltante', 'index': 'Marca'},
+        labels={'% Faltante': 'Porcentaje Faltante'},
         color='% Faltante',
         color_continuous_scale='Reds'
     )
 
     return fig_pedidos, fig_faltantes
+
+
+def aplicar_filtros(df: pd.DataFrame, filtros: dict) -> pd.DataFrame:
+    """
+    Aplica filtros a un DataFrame de manera independiente
+    """
+    df_filtrado = df.copy()
+
+    if filtros.get('pedidos') and 'Pedido' in df.columns:
+        df_filtrado = df_filtrado[df_filtrado['Pedido'].isin(filtros['pedidos'])]
+
+    if filtros.get('marcas') and 'Marca' in df.columns:
+        df_filtrado = df_filtrado[df_filtrado['Marca'].isin(filtros['marcas'])]
+
+    if filtros.get('materiales') and 'Material' in df.columns:
+        df_filtrado = df_filtrado[df_filtrado['Material'].isin(filtros['materiales'])]
+
+    if filtros.get('fechas') and 'Fecha Embarque' in df.columns:
+        inicio, fin = filtros['fechas']
+        df_filtrado = df_filtrado[
+            (df_filtrado['Fecha Embarque'].dt.date >= inicio) &
+            (df_filtrado['Fecha Embarque'].dt.date <= fin)
+            ]
+
+    return df_filtrado
 
 
 def main():
@@ -273,10 +312,7 @@ def main():
         try:
             # Procesar datos
             with st.spinner('Procesando archivos...'):
-                procesador = ProcesadorPedidos(
-                    archivo_pedidos,
-                    archivo_inventarios
-                )
+                procesador = ProcesadorPedidos(archivo_pedidos, archivo_inventarios)
                 pedidos, completos, incompletos, reporte_marcas = procesador.procesar()
 
             # Sección de Filtros
@@ -305,43 +341,23 @@ def main():
                     max_value=fecha_max
                 )
 
-            # Aplicar filtros a las copias para visualización
-            pedidos_viz = pedidos.copy()
-            completos_viz = completos.copy()
-            incompletos_viz = incompletos.copy()
+            # Crear diccionario de filtros
+            filtros = {
+                'pedidos': pedidos_filtrados if pedidos_filtrados else None,
+                'marcas': marcas_filtradas if marcas_filtradas else None,
+                'materiales': materiales_filtrados if materiales_filtrados else None,
+                'fechas': fechas_filtradas if len(fechas_filtradas) == 2 else None
+            }
 
-            if pedidos_filtrados:
-                pedidos_viz = pedidos_viz[pedidos_viz['Pedido'].isin(pedidos_filtrados)]
-                completos_viz = completos_viz[completos_viz['Pedido'].isin(pedidos_filtrados)]
-                incompletos_viz = incompletos_viz[incompletos_viz['Pedido'].isin(pedidos_filtrados)]
+            # Aplicar filtros de manera independiente
+            pedidos_viz = aplicar_filtros(pedidos, filtros)
+            completos_viz = aplicar_filtros(completos, filtros)
+            incompletos_viz = aplicar_filtros(incompletos, filtros)
 
-            if marcas_filtradas:
-                pedidos_viz = pedidos_viz[pedidos_viz['Marca'].isin(marcas_filtradas)]
-                completos_viz = completos_viz[completos_viz['Marca'].isin(marcas_filtradas)]
-                incompletos_viz = incompletos_viz[incompletos_viz['Marca'].isin(marcas_filtradas)]
+            # Generar reporte de marcas con datos filtrados
+            reporte_marcas_viz = procesador.generar_reporte_marcas(pedidos_viz)
 
-            if materiales_filtrados:
-                pedidos_viz = pedidos_viz[pedidos_viz['Material'].isin(materiales_filtrados)]
-                if 'Material' in incompletos_viz.columns:
-                    incompletos_viz = incompletos_viz[incompletos_viz['Material'].isin(materiales_filtrados)]
-
-            if len(fechas_filtradas) == 2:
-                inicio, fin = fechas_filtradas
-                mask_fecha = (pedidos_viz['Fecha Embarque'].dt.date >= inicio) & \
-                             (pedidos_viz['Fecha Embarque'].dt.date <= fin)
-                pedidos_viz = pedidos_viz[mask_fecha]
-
-                if 'Fecha Embarque' in completos_viz.columns:
-                    mask_fecha = (completos_viz['Fecha Embarque'].dt.date >= inicio) & \
-                                 (completos_viz['Fecha Embarque'].dt.date <= fin)
-                    completos_viz = completos_viz[mask_fecha]
-
-                if 'Fecha Embarque' in incompletos_viz.columns:
-                    mask_fecha = (incompletos_viz['Fecha Embarque'].dt.date >= inicio) & \
-                                 (incompletos_viz['Fecha Embarque'].dt.date <= fin)
-                    incompletos_viz = incompletos_viz[mask_fecha]
-
-            # Mostrar datos filtrados
+            # Mostrar métricas
             st.header("Resumen General")
             col1, col2, col3 = st.columns(3)
             with col1:
@@ -351,75 +367,74 @@ def main():
             with col3:
                 st.metric("Pedidos Incompletos", len(incompletos_viz['Pedido'].unique()))
 
-            # Generar reporte de marcas filtrado
-            reporte_marcas_viz = procesador.generar_reporte_marcas(pedidos_viz)
-
-            # Análisis y visualizaciones por marca
+            # Análisis por marca
             st.header("Análisis por Marca")
+            if not reporte_marcas_viz.empty:
+                st.subheader("Resumen por Marca")
+                st.dataframe(reporte_marcas_viz, use_container_width=True)
 
-            # Tabla de análisis
-            st.subheader("Resumen por Marca")
-            st.dataframe(reporte_marcas_viz, use_container_width=True)
+                # Visualizaciones
+                fig_pedidos, fig_faltantes = crear_graficas_marca(reporte_marcas_viz)
+                if fig_pedidos and fig_faltantes:
+                    tab1, tab2 = st.tabs(["Distribución de Pedidos", "Análisis de Faltantes"])
+                    with tab1:
+                        st.plotly_chart(fig_pedidos, use_container_width=True)
+                    with tab2:
+                        st.plotly_chart(fig_faltantes, use_container_width=True)
+            else:
+                st.warning("No hay datos disponibles para mostrar el reporte de marcas")
 
-            # Visualizaciones
-            st.subheader("Visualizaciones por Marca")
-            fig_pedidos, fig_faltantes = crear_graficas_marca(reporte_marcas_viz)
-
-            tab1, tab2 = st.tabs(["Distribución de Pedidos", "Análisis de Faltantes"])
-            with tab1:
-                st.plotly_chart(fig_pedidos, use_container_width=True)
-            with tab2:
-                st.plotly_chart(fig_faltantes, use_container_width=True)
-
-            # Visualización de datos
+            # Detalle de pedidos
             st.header("Detalle de Pedidos")
-            tabs = st.tabs(["Todos los Pedidos", "Pedidos Completos", "Pedidos Incompletos"])
+            if not pedidos_viz.empty:
+                tabs = st.tabs(["Todos los Pedidos", "Pedidos Completos", "Pedidos Incompletos"])
+                with tabs[0]:
+                    st.dataframe(pedidos_viz, use_container_width=True)
+                with tabs[1]:
+                    st.dataframe(completos_viz, use_container_width=True)
+                with tabs[2]:
+                    st.dataframe(incompletos_viz, use_container_width=True)
 
-            with tabs[0]:
-                st.dataframe(pedidos_viz, use_container_width=True)
-            with tabs[1]:
-                st.dataframe(completos_viz, use_container_width=True)
-            with tabs[2]:
-                st.dataframe(incompletos_viz, use_container_width=True)
+                # Botón de descarga
+                output = BytesIO()
+                with pd.ExcelWriter(output, engine='openpyxl', datetime_format='dd/mm/yy') as writer:
+                    pedidos_viz.to_excel(writer, sheet_name='Todos los Pedidos', index=False)
+                    completos_viz.to_excel(writer, sheet_name='Pedidos Completos', index=False)
+                    incompletos_viz.to_excel(writer, sheet_name='Pedidos Incompletos', index=False)
 
-            # Botón de descarga único para pedidos (datos sin filtrar)
-            output_pedidos = BytesIO()
-            with pd.ExcelWriter(output_pedidos, engine='openpyxl', datetime_format='dd/mm/yy') as writer:
-                pedidos.to_excel(writer, sheet_name='Todos los Pedidos', index=False)
-                completos.to_excel(writer, sheet_name='Pedidos Completos', index=False)
-                incompletos.to_excel(writer, sheet_name='Pedidos Incompletos', index=False)
-
-            st.download_button(
-                "Descargar Reporte de Pedidos",
-                data=output_pedidos.getvalue(),
-                file_name="reporte_pedidos.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+                st.download_button(
+                    "Descargar Reporte de Pedidos",
+                    data=output.getvalue(),
+                    file_name="reporte_pedidos.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
 
             # Reporte por marca
             st.header("Reporte por Marca")
             marcas = sorted(incompletos_viz['Marca'].unique())
-            marca_tabs = st.tabs(marcas)
+            if marcas:
+                marca_tabs = st.tabs(marcas)
+                for marca, tab in zip(marcas, marca_tabs):
+                    with tab:
+                        df_marca = incompletos_viz[incompletos_viz['Marca'] == marca]
+                        st.dataframe(df_marca, use_container_width=True)
 
-            for marca, tab in zip(marcas, marca_tabs):
-                with tab:
-                    df_marca = incompletos_viz[incompletos_viz['Marca'] == marca]
-                    st.dataframe(df_marca, use_container_width=True)
+                # Botón de descarga para reporte por marca
+                output_marca = BytesIO()
+                with pd.ExcelWriter(output_marca, engine='openpyxl', datetime_format='dd/mm/yy') as writer:
+                    for marca in marcas:
+                        df_marca = incompletos_viz[incompletos_viz['Marca'] == marca]
+                        nombre_hoja = marca[:31]
+                        df_marca.to_excel(writer, sheet_name=nombre_hoja, index=False)
 
-            # Botón de descarga para reporte por marca (datos sin filtrar)
-            output_marca = BytesIO()
-            with pd.ExcelWriter(output_marca, engine='openpyxl', datetime_format='dd/mm/yy') as writer:
-                for marca in sorted(incompletos['Marca'].unique()):
-                    df_marca = incompletos[incompletos['Marca'] == marca]
-                    nombre_hoja = marca[:31]
-                    df_marca.to_excel(writer, sheet_name=nombre_hoja, index=False)
-
-            st.download_button(
-                "Descargar Reporte Detallado por Marca",
-                data=output_marca.getvalue(),
-                file_name="reporte_detallado_por_marca.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+                st.download_button(
+                    "Descargar Reporte Detallado por Marca",
+                    data=output_marca.getvalue(),
+                    file_name="reporte_detallado_por_marca.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+            else:
+                st.warning("No hay datos de marcas para mostrar")
 
         except Exception as e:
             st.error(f"Error durante el procesamiento: {str(e)}")
