@@ -1,8 +1,10 @@
-from typing import List, Tuple, Dict
-from domain.entities import Pedido, Inventario
-from domain.repositories import PedidoRepository
+from typing import Optional, Tuple, List, Dict
 import pandas as pd
 from collections import defaultdict
+from domain.repositories import PedidoRepository
+from infrastructure.cache import CacheManager, InMemoryCacheManager
+from io import BytesIO
+import numpy as np
 
 class ProcesarPedidosUseCase:
     def __init__(
