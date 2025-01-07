@@ -13,7 +13,6 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
-
 class ProcesadorPedidos:
     MARCAS_PERMITIDAS = {"Marca privada Exp.", "Producto de Catálogo Americano"}
     CENTROS_REQUERIDOS = {"EXPO", "LARE"}
@@ -36,18 +35,11 @@ class ProcesadorPedidos:
     }
 
     def __init__(self, archivo_pedidos, archivo_inventarios):
-        """
-        Inicializa el procesador con los archivos cargados.
-        """
         self.archivo_pedidos = archivo_pedidos
         self.archivo_inventarios = archivo_inventarios
-        # Cargar BD Brand directamente desde el repositorio
         self.archivo_bd_brand = pd.read_excel("BD Brand.xlsx")
 
     def preprocesar_pedidos(self) -> pd.DataFrame:
-        """
-        Preprocesa el archivo de pedidos.
-        """
         pedidos = pd.read_excel(
             self.archivo_pedidos,
             header=9
@@ -66,45 +58,49 @@ class ProcesadorPedidos:
         return pedidos
 
     def generar_reporte_marcas(self, pedidos: pd.DataFrame) -> pd.DataFrame:
-        """
-        Genera un reporte detallado por marca
-        """
         if pedidos.empty:
             return pd.DataFrame()
 
         reporte_marcas = pd.DataFrame()
 
+        # Calculamos el estado de cada pedido
+        estado_pedidos = pedidos.groupby('Pedido')['Estatus'].agg(
+            lambda x: 'Completo' if all(x == 'Completo') else 'Incompleto'
+        )
+
         # Agrupar por marca
         reporte_marcas['Total Pedidos'] = pedidos.groupby('Marca')['Pedido'].nunique()
 
         # Pedidos completos por marca
-        pedidos_completos = pedidos[pedidos['Estatus'] == 'Completo']
-        reporte_marcas['Pedidos Completos'] = pedidos_completos.groupby('Marca')['Pedido'].nunique()
+        pedidos_marca = pedidos.groupby(['Marca', 'Pedido'])['Estatus'].agg(
+            lambda x: 'Completo' if all(x == 'Completo') else 'Incompleto'
+        ).reset_index()
 
-        # Pedidos incompletos por marca
-        pedidos_incompletos = pedidos[pedidos['Estatus'] == 'Incompleto']
-        reporte_marcas['Pedidos Incompletos'] = pedidos_incompletos.groupby('Marca')['Pedido'].nunique()
+        reporte_marcas['Pedidos Completos'] = pedidos_marca[
+            pedidos_marca['Estatus'] == 'Completo'
+        ].groupby('Marca')['Pedido'].nunique()
+
+        reporte_marcas['Pedidos Incompletos'] = pedidos_marca[
+            pedidos_marca['Estatus'] == 'Incompleto'
+        ].groupby('Marca')['Pedido'].nunique()
+
+        # Llenar NaN con 0
+        reporte_marcas = reporte_marcas.fillna(0)
 
         # Calcular porcentajes
-        reporte_marcas['% Completos'] = (
-                    reporte_marcas['Pedidos Completos'] / reporte_marcas['Total Pedidos'] * 100).round(2)
-        reporte_marcas['% Incompletos'] = (
-                    reporte_marcas['Pedidos Incompletos'] / reporte_marcas['Total Pedidos'] * 100).round(2)
+        reporte_marcas['% Completos'] = (reporte_marcas['Pedidos Completos'] / reporte_marcas['Total Pedidos'] * 100).round(2)
+        reporte_marcas['% Incompletos'] = (reporte_marcas['Pedidos Incompletos'] / reporte_marcas['Total Pedidos'] * 100).round(2)
 
         # Valor total de pedidos
         reporte_marcas['Total Solicitado (pz)'] = pedidos.groupby('Marca')['Ctd. Sol.'].sum()
 
         # Valor faltante
         reporte_marcas['Faltante (pz)'] = pedidos.groupby('Marca')['Faltante'].sum()
-        reporte_marcas['% Faltante'] = (
-                    reporte_marcas['Faltante (pz)'] / reporte_marcas['Total Solicitado (pz)'] * 100).round(2)
+        reporte_marcas['% Faltante'] = (reporte_marcas['Faltante (pz)'] / reporte_marcas['Total Solicitado (pz)'] * 100).round(2)
 
         return reporte_marcas
 
     def procesar(self) -> tuple:
-        """
-        Procesa los pedidos e inventarios y retorna los DataFrames resultantes
-        """
         try:
             # 1. Cargar datos
             pedidos = self.preprocesar_pedidos()
@@ -116,7 +112,7 @@ class ProcesadorPedidos:
                 (pedidos['Muestra'] != 'X') &
                 (pedidos['Descripción'].isin(self.MARCAS_PERMITIDAS)) &
                 (~pedidos['Nombre 1'].str.contains('James Palin', na=False))
-                ]
+            ]
 
             # 3. Preparar inventarios
             inventarios = inventarios[inventarios['Carac. Planif.'] != 'ND']
@@ -191,50 +187,80 @@ class ProcesadorPedidos:
             pedidos = pedidos[list(self.COLUMNAS_SALIDA.keys())]
             pedidos = pedidos.rename(columns=self.COLUMNAS_SALIDA)
 
-            # 9. Procesar Estatus y Horario Entrega
-            suma_faltantes_transito = pedidos.groupby('Pedido')['Faltante con Tránsito'].sum()
-            pedidos_completos = suma_faltantes_transito[suma_faltantes_transito == 0].index
-
-            pedidos['Estatus'] = pedidos['Pedido'].apply(
-                lambda x: 'Completo' if x in pedidos_completos else 'Incompleto'
+            # 9. Procesar Estatus
+            pedidos['Estatus'] = pedidos.apply(
+                lambda row: 'Completo' if row['Faltante'] == 0 else 'Incompleto',
+                axis=1
             )
 
-            pedidos.loc[
-                (pedidos['Faltante'] > 0) & (pedidos['Faltante con Tránsito'] == 0), 'Horario Entrega'] = 'Transito'
-
-            # 10. Separar completos e incompletos
-            columnas_completos = ['Pedido', 'Marca', 'Cliente', 'Fecha Embarque', 'Liberación en Sistema',
-                                  'Horario Entrega']
-            completos = pedidos[pedidos['Estatus'] == 'Completo'][columnas_completos].drop_duplicates(subset=['Pedido'])
-
-            incompletos = pedidos[
-                (pedidos['Estatus'] == 'Incompleto') &
-                ((pedidos['Faltante'] > 0) | (pedidos['Horario Entrega'] == 'Transito'))
-                ]
-
-            # Generar reporte de marcas
-            reporte_marcas = self.generar_reporte_marcas(pedidos)
-
-            return pedidos, completos, incompletos, reporte_marcas
+            return pedidos, None, None, None  # Solo retornamos pedidos, el resto se calculará después
 
         except Exception as e:
             st.error(f"Error en el procesamiento: {str(e)}")
             raise
 
-
-def to_excel(df: pd.DataFrame) -> bytes:
+def aplicar_filtros_y_contar(pedidos: pd.DataFrame, filtros: dict):
     """
-    Convierte un DataFrame a bytes de Excel
+    Aplica filtros al DataFrame principal y calcula todas las métricas
     """
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, index=True)
-    return output.getvalue()
+    # Primero aplicamos los filtros al DataFrame principal
+    df_filtrado = pedidos.copy()
 
+    if filtros.get('pedidos'):
+        df_filtrado = df_filtrado[df_filtrado['Pedido'].isin(filtros['pedidos'])]
+
+    if filtros.get('marcas'):
+        df_filtrado = df_filtrado[df_filtrado['Marca'].isin(filtros['marcas'])]
+
+    if filtros.get('materiales'):
+        df_filtrado = df_filtrado[df_filtrado['Material'].isin(filtros['materiales'])]
+
+    if filtros.get('fechas'):
+        inicio, fin = filtros['fechas']
+        df_filtrado = df_filtrado[
+            (df_filtrado['Fecha Embarque'].dt.date >= inicio) &
+            (df_filtrado['Fecha Embarque'].dt.date <= fin)
+        ]
+
+    # Calculamos las métricas desde el DataFrame filtrado
+    total_pedidos = len(df_filtrado['Pedido'].unique())
+
+    # Para pedidos completos/incompletos, primero agrupamos por pedido y verificamos el estado
+    estado_pedidos = df_filtrado.groupby('Pedido')['Estatus'].agg(
+        lambda x: 'Completo' if all(x == 'Completo') else 'Incompleto'
+    )
+
+    total_completos = sum(estado_pedidos == 'Completo')
+    total_incompletos = sum(estado_pedidos == 'Incompleto')
+
+    # Separar los DataFrames filtrados
+    pedidos_completos = df_filtrado[df_filtrado['Pedido'].isin(estado_pedidos[estado_pedidos == 'Completo'].index)]
+    pedidos_incompletos = df_filtrado[df_filtrado['Pedido'].isin(estado_pedidos[estado_pedidos == 'Incompleto'].index)]
+
+    # Agrupar pedidos completos por datos únicos
+    if not pedidos_completos.empty:
+        pedidos_completos = pedidos_completos.groupby('Pedido').agg({
+            'Marca': 'first',
+            'Cliente': 'first',
+            'Fecha Embarque': 'first',
+            'Liberación en Sistema': 'first',
+            'Horario Entrega': 'first'
+        }).reset_index()
+
+    return {
+        'df_filtrado': df_filtrado,
+        'pedidos_completos': pedidos_completos,
+        'pedidos_incompletos': pedidos_incompletos,
+        'metricas': {
+            'total_pedidos': total_pedidos,
+            'total_completos': total_completos,
+            'total_incompletos': total_incompletos
+        }
+    }
 
 def crear_graficas_marca(reporte_marcas: pd.DataFrame):
     """
-    Crea visualizaciones para el reporte de marcas de manera segura
+    Crea visualizaciones para el reporte de marcas
     """
     if reporte_marcas.empty:
         return None, None
@@ -270,32 +296,6 @@ def crear_graficas_marca(reporte_marcas: pd.DataFrame):
 
     return fig_pedidos, fig_faltantes
 
-
-def aplicar_filtros(df: pd.DataFrame, filtros: dict) -> pd.DataFrame:
-    """
-    Aplica filtros a un DataFrame de manera independiente
-    """
-    df_filtrado = df.copy()
-
-    if filtros.get('pedidos') and 'Pedido' in df.columns:
-        df_filtrado = df_filtrado[df_filtrado['Pedido'].isin(filtros['pedidos'])]
-
-    if filtros.get('marcas') and 'Marca' in df.columns:
-        df_filtrado = df_filtrado[df_filtrado['Marca'].isin(filtros['marcas'])]
-
-    if filtros.get('materiales') and 'Material' in df.columns:
-        df_filtrado = df_filtrado[df_filtrado['Material'].isin(filtros['materiales'])]
-
-    if filtros.get('fechas') and 'Fecha Embarque' in df.columns:
-        inicio, fin = filtros['fechas']
-        df_filtrado = df_filtrado[
-            (df_filtrado['Fecha Embarque'].dt.date >= inicio) &
-            (df_filtrado['Fecha Embarque'].dt.date <= fin)
-            ]
-
-    return df_filtrado
-
-
 def main():
     st.set_page_config(page_title="Procesador de Pedidos", layout="wide")
 
@@ -313,7 +313,7 @@ def main():
             # Procesar datos
             with st.spinner('Procesando archivos...'):
                 procesador = ProcesadorPedidos(archivo_pedidos, archivo_inventarios)
-                pedidos, completos, incompletos, reporte_marcas = procesador.procesar()
+                pedidos, _, _, _ = procesador.procesar()  # Solo necesitamos pedidos inicialmente
 
             # Sección de Filtros
             st.header("Filtros de Visualización")
@@ -349,23 +349,21 @@ def main():
                 'fechas': fechas_filtradas if len(fechas_filtradas) == 2 else None
             }
 
-            # Aplicar filtros de manera independiente
-            pedidos_viz = aplicar_filtros(pedidos, filtros)
-            completos_viz = aplicar_filtros(completos, filtros)
-            incompletos_viz = aplicar_filtros(incompletos, filtros)
-
-            # Generar reporte de marcas con datos filtrados
-            reporte_marcas_viz = procesador.generar_reporte_marcas(pedidos_viz)
+            # Aplicar filtros y obtener resultados
+            resultados = aplicar_filtros_y_contar(pedidos, filtros)
 
             # Mostrar métricas
             st.header("Resumen General")
             col1, col2, col3 = st.columns(3)
             with col1:
-                st.metric("Total Pedidos", len(pedidos_viz['Pedido'].unique()))
+                st.metric("Total Pedidos", resultados['metricas']['total_pedidos'])
             with col2:
-                st.metric("Pedidos Completos", len(completos_viz['Pedido'].unique()))
+                st.metric("Pedidos Completos", resultados['metricas']['total_completos'])
             with col3:
-                st.metric("Pedidos Incompletos", len(incompletos_viz['Pedido'].unique()))
+                st.metric("Pedidos Incompletos", resultados['metricas']['total_incompletos'])
+
+            # Generar reporte de marcas con datos filtrados
+            reporte_marcas_viz = procesador.generar_reporte_marcas(resultados['df_filtrado'])
 
             # Análisis por marca
             st.header("Análisis por Marca")
@@ -386,21 +384,29 @@ def main():
 
             # Detalle de pedidos
             st.header("Detalle de Pedidos")
-            if not pedidos_viz.empty:
+            if not resultados['df_filtrado'].empty:
                 tabs = st.tabs(["Todos los Pedidos", "Pedidos Completos", "Pedidos Incompletos"])
                 with tabs[0]:
-                    st.dataframe(pedidos_viz, use_container_width=True)
+                    st.dataframe(resultados['df_filtrado'], use_container_width=True)
                 with tabs[1]:
-                    st.dataframe(completos_viz, use_container_width=True)
+                    if not resultados['pedidos_completos'].empty:
+                        st.dataframe(resultados['pedidos_completos'], use_container_width=True)
+                    else:
+                        st.info("No hay pedidos completos para mostrar")
                 with tabs[2]:
-                    st.dataframe(incompletos_viz, use_container_width=True)
+                    if not resultados['pedidos_incompletos'].empty:
+                        st.dataframe(resultados['pedidos_incompletos'], use_container_width=True)
+                    else:
+                        st.info("No hay pedidos incompletos para mostrar")
 
                 # Botón de descarga
                 output = BytesIO()
                 with pd.ExcelWriter(output, engine='openpyxl', datetime_format='dd/mm/yy') as writer:
-                    pedidos_viz.to_excel(writer, sheet_name='Todos los Pedidos', index=False)
-                    completos_viz.to_excel(writer, sheet_name='Pedidos Completos', index=False)
-                    incompletos_viz.to_excel(writer, sheet_name='Pedidos Incompletos', index=False)
+                    resultados['df_filtrado'].to_excel(writer, sheet_name='Todos los Pedidos', index=False)
+                    if not resultados['pedidos_completos'].empty:
+                        resultados['pedidos_completos'].to_excel(writer, sheet_name='Pedidos Completos', index=False)
+                    if not resultados['pedidos_incompletos'].empty:
+                        resultados['pedidos_incompletos'].to_excel(writer, sheet_name='Pedidos Incompletos', index=False)
 
                 st.download_button(
                     "Descargar Reporte de Pedidos",
@@ -411,20 +417,24 @@ def main():
 
             # Reporte por marca
             st.header("Reporte por Marca")
-            marcas = sorted(incompletos_viz['Marca'].unique())
+            marcas = sorted(resultados['pedidos_incompletos']['Marca'].unique()) if not resultados['pedidos_incompletos'].empty else []
             if marcas:
                 marca_tabs = st.tabs(marcas)
                 for marca, tab in zip(marcas, marca_tabs):
                     with tab:
-                        df_marca = incompletos_viz[incompletos_viz['Marca'] == marca]
+                        df_marca = resultados['pedidos_incompletos'][
+                            resultados['pedidos_incompletos']['Marca'] == marca
+                        ]
                         st.dataframe(df_marca, use_container_width=True)
 
                 # Botón de descarga para reporte por marca
                 output_marca = BytesIO()
                 with pd.ExcelWriter(output_marca, engine='openpyxl', datetime_format='dd/mm/yy') as writer:
                     for marca in marcas:
-                        df_marca = incompletos_viz[incompletos_viz['Marca'] == marca]
-                        nombre_hoja = marca[:31]
+                        df_marca = resultados['pedidos_incompletos'][
+                            resultados['pedidos_incompletos']['Marca'] == marca
+                        ]
+                        nombre_hoja = marca[:31]  # Excel tiene un límite de 31 caracteres para nombres de hojas
                         df_marca.to_excel(writer, sheet_name=nombre_hoja, index=False)
 
                 st.download_button(
@@ -438,9 +448,9 @@ def main():
 
         except Exception as e:
             st.error(f"Error durante el procesamiento: {str(e)}")
+            logging.error(f"Error durante el procesamiento: {str(e)}")
     else:
         st.info("Por favor, suba todos los archivos requeridos para comenzar el procesamiento.")
-
 
 if __name__ == "__main__":
     main()
