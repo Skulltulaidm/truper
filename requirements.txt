@@ -2,3 +2,6 @@ streamlit
 pandas
 openpyxl
 plotly
+dataclasses-json
+python-dateutil
+cachetools
