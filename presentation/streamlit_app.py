@@ -1,13 +1,12 @@
-# presentation/streamlit_app.py
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 from datetime import datetime, timedelta
-from application.use_cases import ProcesarPedidosUseCase
-from infrastructure.repositories import PandasPedidoRepository
-from infrastructure.cache import InMemoryCacheManager
 from typing import Dict, List, Tuple, Optional
 from io import BytesIO
+from application.use_cases import ProcesarPedidosUseCase
+from infrastructure.cache import InMemoryCacheManager
+from domain.repositories import PedidoRepository
 
 class StreamlitView:
     """
